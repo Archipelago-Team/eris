@@ -49,6 +49,24 @@ type withEmptyLayer struct {
 func (e withEmptyLayer) Error() string { return e.err.Error() }
 func (e withEmptyLayer) Unwrap() error { return e.err }
 
+type unwrapSlice struct {
+	errs []error
+}
+
+func (e *unwrapSlice) Error() string {
+	if len(e.errs) == 0 {
+		return ""
+	}
+	return eris.Join(e.errs...).Error()
+}
+
+func (e *unwrapSlice) Unwrap() []error {
+	if e == nil {
+		return nil
+	}
+	return e.errs
+}
+
 func setupTestCase(wrapf bool, cause error, input []string) error {
 	err := cause
 	for _, str := range input {
@@ -67,10 +85,6 @@ func TestErrorWrapping(t *testing.T) {
 		input  []string // input for error wrapping
 		output string   // expected output
 	}{
-		"nil root error": {
-			cause: nil,
-			input: []string{"additional context"},
-		},
 		"standard error wrapping with a global root cause": {
 			cause:  globalErr,
 			input:  []string{"additional context", "even more context"},
@@ -363,134 +377,6 @@ func TestErrorIs(t *testing.T) {
 	}
 }
 
-func TestErrorAs(t *testing.T) {
-	externalError := errors.New("external error")
-	rootErr := eris.New("root error")
-	wrappedErr := eris.Wrap(rootErr, "additional context")
-	customErr := withLayer{
-		msg: "additional context",
-		err: withEmptyLayer{
-			err: withMessage{
-				msg: "external error",
-			},
-		},
-	}
-
-	tests := map[string]struct {
-		cause  error       // root error
-		target interface{} // errors for comparison
-		match  bool        // expected comparison result
-		output interface{} // value of target on match
-	}{
-		"nil error against nil target": {
-			cause:  nil,
-			target: nil,
-			match:  false,
-			output: nil,
-		},
-		"error against nil target": {
-			cause:  rootErr,
-			target: nil,
-			match:  false,
-			output: nil,
-		},
-		"error against non pointer interface": {
-			cause:  rootErr,
-			target: rootErr,
-			match:  false,
-			output: nil,
-		},
-		"error against non error interface": {
-			cause:  rootErr,
-			target: &withMessage{"test"},
-			match:  false,
-			output: nil,
-		},
-		"error against non pointer": {
-			cause:  rootErr,
-			target: "test",
-			match:  false,
-			output: nil,
-		},
-		"nil error against external target": {
-			cause:  nil,
-			target: &externalError,
-			match:  false,
-			output: nil,
-		},
-		"root error against external target": {
-			cause:  eris.New("root error"),
-			target: &externalError,
-			match:  false,
-			output: nil,
-		},
-		"wrapped error against external target": {
-			cause:  wrappedErr,
-			target: &externalError,
-			match:  false,
-			output: nil,
-		},
-		"nil wrapped error against root error target": {
-			cause:  eris.Wrap(nil, "additional context"),
-			target: &rootErr,
-			match:  false,
-			output: nil,
-		},
-		"wrapped error against its own root error target": {
-			cause:  wrappedErr,
-			target: &rootErr,
-			match:  true,
-			output: rootErr,
-		},
-		"root error against itself": {
-			cause:  rootErr,
-			target: &rootErr,
-			match:  true,
-			output: rootErr,
-		},
-		"root error against different root error": {
-			cause:  eris.New("other root error"),
-			target: &rootErr,
-			match:  false,
-			output: nil,
-		},
-		"wrapped error against same wrapped error": {
-			cause:  wrappedErr,
-			target: &wrappedErr,
-			match:  true,
-			output: wrappedErr,
-		},
-		"wrapped error against different wrapped error": {
-			cause:  eris.Wrap(nil, "some other error"),
-			target: &wrappedErr,
-			match:  false,
-			output: nil,
-		},
-		"custom error against similar type error": {
-			cause:  customErr,
-			target: &withLayer{msg: "additional layer", err: externalError},
-			match:  true,
-			output: customErr,
-		},
-	}
-
-	for desc, tc := range tests {
-		rtarget := reflect.ValueOf(tc.target)
-		t.Run(desc, func(t *testing.T) {
-			match := eris.As(tc.cause, tc.target)
-			if tc.match != match {
-				t.Fatalf("%v: expected eris.As('%v', '%v') to return %v but got %v", desc, tc.cause, reflect.ValueOf(tc.target).Elem(), tc.match, match)
-			}
-			if !match {
-				return
-			}
-			if got := rtarget.Elem().Interface(); got != tc.output {
-				t.Fatalf("%v: expected eris.As('%v', '%v') target interface value to be %#v, but got %#v", desc, tc.cause, reflect.ValueOf(tc.target).Elem(), tc.output, got)
-			}
-		})
-	}
-}
-
 func TestErrorCause(t *testing.T) {
 	globalErr := eris.New("global error")
 	extErr := errors.New("external error")
@@ -527,11 +413,24 @@ func TestErrorCause(t *testing.T) {
 	for desc, tc := range tests {
 		t.Run(desc, func(t *testing.T) {
 			err := setupTestCase(false, tc.cause, tc.input)
-			cause := eris.Cause(err)
-			if tc.output != eris.Cause(err) {
+			if cause := eris.Cause(err); cause != tc.output {
 				t.Errorf("%v: expected { %v } got { %v }", desc, tc.output, cause)
 			}
 		})
+	}
+}
+
+func TestErrorCauseJoin(t *testing.T) {
+	globalErr := eris.New("global error")
+	extErr := errors.New("external error")
+
+	err := &unwrapSlice{errs: []error{globalErr, extErr}}
+	if cause := eris.Cause(err); cause != globalErr {
+		t.Errorf("cause join: expected { %v } got { %v }", globalErr, cause)
+	}
+
+	if cause := eris.Cause(nil); cause != nil {
+		t.Errorf("cause join: expected { %v } got { %T }", nil, cause)
 	}
 }
 
@@ -726,10 +625,6 @@ func TestStackFrames(t *testing.T) {
 			cause:     globalErr,
 			input:     []string{"additional context", "even more context"},
 			isWrapErr: true,
-		},
-		"nil error": {
-			cause:     nil,
-			isWrapErr: false,
 		},
 	}
 

@@ -15,16 +15,6 @@ func TestUnpack(t *testing.T) {
 		input  []string
 		output eris.UnpackedError
 	}{
-		"nil error": {
-			cause:  nil,
-			input:  nil,
-			output: eris.UnpackedError{},
-		},
-		"nil root error": {
-			cause:  nil,
-			input:  []string{"additional context"},
-			output: eris.UnpackedError{},
-		},
 		"standard error wrapping with internal root cause (eris.New)": {
 			cause: eris.New("root error"),
 			input: []string{"additional context", "even more context"},

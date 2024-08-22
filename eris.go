@@ -2,9 +2,11 @@
 package eris
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"reflect"
+	"strings"
 )
 
 // New creates a new root error with a static message.
@@ -27,6 +29,18 @@ func Errorf(format string, args ...interface{}) error {
 	}
 }
 
+// Join returns an error that wraps the given errors.
+// Any nil error values are discarded.
+// Join returns nil if every value in errs is nil.
+// The error formats as the concatenation of the strings obtained
+// by calling the Error method of each element of errs, with a newline
+// between each string.
+//
+// A non-nil error returned by Join implements the Unwrap() []error method.
+func Join(errs ...error) error {
+	return errors.Join(errs...)
+}
+
 // Wrap adds additional context to all error types while maintaining the type of the original error.
 //
 // This method behaves differently for each error type. For root errors, the stack trace is reset to the current
@@ -35,8 +49,11 @@ func Errorf(format string, args ...interface{}) error {
 // attempts to unwrap them while building a new error chain. If an external type does not implement the unwrap
 // interface, it flattens the error and creates a new root error from it before wrapping with the additional
 // context.
-func Wrap(err error, msg string) error {
-	return wrap(err, fmt.Sprint(msg))
+func Wrap(err error, msg ...string) error {
+	if len(msg) == 0 {
+		return wrap(err, "")
+	}
+	return wrap(err, strings.Join(msg, " "))
 }
 
 // Wrapf adds additional context to all error types while maintaining the type of the original error.
@@ -48,7 +65,7 @@ func Wrapf(err error, format string, args ...interface{}) error {
 
 func wrap(err error, msg string) error {
 	if err == nil {
-		return nil
+		panic("eris: error cannot be nil")
 	}
 
 	// callers(4) skips runtime.Callers, stack.callers, this method, and Wrap(f)
@@ -93,13 +110,7 @@ func wrap(err error, msg string) error {
 // Unwrap returns the result of calling the Unwrap method on err, if err's type contains an Unwrap method
 // returning error. Otherwise, Unwrap returns nil.
 func Unwrap(err error) error {
-	u, ok := err.(interface {
-		Unwrap() error
-	})
-	if !ok {
-		return nil
-	}
-	return u.Unwrap()
+	return errors.Unwrap(err)
 }
 
 // Is reports whether any error in err's chain matches target.
@@ -109,22 +120,7 @@ func Unwrap(err error) error {
 // An error is considered to match a target if it is equal to that target or if it implements a method
 // Is(error) bool such that Is(target) returns true.
 func Is(err, target error) bool {
-	if target == nil {
-		return err == target
-	}
-
-	isComparable := reflect.TypeOf(target).Comparable()
-	for {
-		if isComparable && err == target {
-			return true
-		}
-		if x, ok := err.(interface{ Is(error) bool }); ok && x.Is(target) {
-			return true
-		}
-		if err = Unwrap(err); err == nil {
-			return false
-		}
-	}
+	return errors.Is(err, target)
 }
 
 // As finds the first error in err's chain that matches target. If there's a match, it sets target to that error
@@ -135,46 +131,29 @@ func Is(err, target error) bool {
 // An error matches target if the error's concrete value is assignable to the value pointed to by target,
 // or if the error has a method As(interface{}) bool such that As(target) returns true.
 func As(err error, target interface{}) bool {
-	if target == nil || err == nil {
-		return false
-	}
-	val := reflect.ValueOf(target)
-	typ := val.Type()
-
-	// target must be a non-nil pointer
-	if typ.Kind() != reflect.Ptr || val.IsNil() {
-		return false
-	}
-
-	// *target must be interface or implement error
-	if e := typ.Elem(); e.Kind() != reflect.Interface && !e.Implements(reflect.TypeOf((*error)(nil)).Elem()) {
-		return false
-	}
-
-	for {
-		errType := reflect.TypeOf(err)
-		if errType != reflect.TypeOf(&wrapError{}) && errType != reflect.TypeOf(&rootError{}) && reflect.TypeOf(err).AssignableTo(typ.Elem()) {
-			val.Elem().Set(reflect.ValueOf(err))
-			return true
-		}
-		if x, ok := err.(interface{ As(interface{}) bool }); ok && x.As(target) {
-			return true
-		}
-		if err = Unwrap(err); err == nil {
-			return false
-		}
-	}
+	return errors.As(err, target)
 }
 
 // Cause returns the root cause of the error, which is defined as the first error in the chain. The original
 // error is returned if it does not implement `Unwrap() error` and nil is returned if the error is nil.
 func Cause(err error) error {
 	for {
-		uerr := Unwrap(err)
-		if uerr == nil {
+		switch x := err.(type) {
+		case interface{ Unwrap() error }:
+			uerr := x.Unwrap()
+			if uerr == nil {
+				return err
+			}
+			err = uerr
+		case interface{ Unwrap() []error }:
+			uerrs := x.Unwrap()
+			if len(uerrs) == 0 {
+				return err
+			}
+			err = uerrs[0]
+		default:
 			return err
 		}
-		err = uerr
 	}
 }
 
